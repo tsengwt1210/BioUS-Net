@@ -42,37 +42,130 @@ while true
         case '2'
             %% --- 任務 2: 訓練新模型 ---
             fprintf('\n--- [任務 2: 訓練新模型] ---\n');
-            disp('正在建立與準備訓練資料集 (採用檔名對齊)...');
+            disp('正在建立與準備資料集 (採用檔名對齊)...');
             [~, classNames] = loadAndPrepareGTruth(gTruthPath_default); 
             
-            [imdsTrain, imdsVal, pxdsTrain, pxdsVal] = partitionAlignedSets(imageFolderPath, maskFolderPath, classNames, 0.8);
-            if isempty(imdsTrain)
-                disp('❌ 訓練集為空，請檢查圖片與遮罩檔名是否匹配 (_mask.png)。返回主選單。');
-                continue;
-            end
-            fprintf('✅ 資料集切分完成: %d 訓練, %d 驗證\n', numel(imdsTrain.Files), numel(imdsVal.Files));
-            targetSize = [512 512];
-            augmenter = imageDataAugmenter('RandXReflection',true, 'RandYReflection',true, 'RandRotation',[-20, 20]);
-            dsTrain = pixelLabelImageDatastore(imdsTrain, pxdsTrain, 'DataAugmentation', augmenter);
-            dsVal = pixelLabelImageDatastore(imdsVal, pxdsVal);
-            dsTrain = transform(dsTrain, @(data) resizeImageAndLabel(data, targetSize));
-            dsVal = transform(dsVal, @(data) resizeImageAndLabel(data, targetSize));
-            disp('✅ 資料集準備完成');
+            % 新增訓練模式選擇選單
+            fprintf('\n請選擇訓練模式:\n');
+            fprintf('[1] 標準隨機切分 (80%%訓練 / 20%%驗證，訓練 1 個模型)\n');
+            fprintf('[2] 5折交叉驗證 (5-Fold Cross Validation，訓練 5 個模型)\n');
+            trainMode = input('請輸入您的選擇 [1-2]: ', 's');
             
-            inputSize = [targetSize, 3];
-            lgraph = unetLayers(inputSize, numel(classNames));
-            options = trainingOptions('adam', 'InitialLearnRate', 1e-3, 'MaxEpochs', 30, ...
-                'MiniBatchSize', 4, 'Shuffle', 'every-epoch', 'ValidationData', dsVal, 'Plots', 'training-progress');
-            
-            disp('🚀 開始訓練 U-Net 模型...');
-            [net, info] = trainNetwork(dsTrain, lgraph, options);
-            disp('✅ U-Net 訓練完成');
-            
-            if lower(input('是否要儲存模型? (y/n) [y]: ', 's')) ~= 'n'
-                dateStr = datestr(now, 'yyyymmdd');
-                modelFileName = sprintf('trainedUnet_%s.mat', dateStr);
-                save(modelFileName, 'net', 'classNames', 'info', 'targetSize');
-                fprintf('✅ 模型已儲存為 %s\n', modelFileName);
+            if trainMode == '1'
+                %% --- 模式 1：標準隨機訓練 ---
+                [imdsTrain, imdsVal, pxdsTrain, pxdsVal] = partitionAlignedSets(imageFolderPath, maskFolderPath, classNames, 0.8);
+                if isempty(imdsTrain)
+                    disp('❌ 訓練集為空，請檢查圖片與遮罩檔名是否匹配 (_mask.png)。返回主選單。');
+                    continue;
+                end
+                fprintf('✅ 資料集切分完成: %d 訓練, %d 驗證\n', numel(imdsTrain.Files), numel(imdsVal.Files));
+                targetSize = [512 512];
+                augmenter = imageDataAugmenter('RandXReflection',true, 'RandYReflection',true, 'RandRotation',[-20, 20]);
+                dsTrain = pixelLabelImageDatastore(imdsTrain, pxdsTrain, 'DataAugmentation', augmenter);
+                dsVal = pixelLabelImageDatastore(imdsVal, pxdsVal);
+                dsTrain = transform(dsTrain, @(data) resizeImageAndLabel(data, targetSize));
+                dsVal = transform(dsVal, @(data) resizeImageAndLabel(data, targetSize));
+                disp('✅ 資料集準備完成');
+                
+                inputSize = [targetSize, 3];
+                lgraph = unetLayers(inputSize, numel(classNames));
+                options = trainingOptions('adam', 'InitialLearnRate', 1e-3, 'MaxEpochs', 30, ...
+                    'MiniBatchSize', 4, 'Shuffle', 'every-epoch', 'ValidationData', dsVal, 'Plots', 'training-progress');
+                
+                disp('🚀 開始訓練 U-Net 模型...');
+                [net, info] = trainNetwork(dsTrain, lgraph, options);
+                disp('✅ U-Net 訓練完成');
+                
+                if lower(input('是否要儲存模型? (y/n) [y]: ', 's')) ~= 'n'
+                    dateStr = datestr(now, 'yyyymmdd');
+                    modelFileName = sprintf('trainedUnet_%s.mat', dateStr);
+                    save(modelFileName, 'net', 'classNames', 'info', 'targetSize');
+                    fprintf('✅ 模型已儲存為 %s\n', modelFileName);
+                end
+                
+            elseif trainMode == '2'
+                %% --- 模式 2：5折交叉驗證 ---
+                % 取出所有完整的資料集
+                [imdsAll, pxdsAll] = buildAlignedDatastores(imageFolderPath, maskFolderPath, classNames);
+                numTotal = numel(imdsAll.Files);
+                if numTotal == 0
+                    disp('❌ 找不到圖片與遮罩的匹配檔案。返回主選單。');
+                    continue;
+                end
+                
+                k = 5; % 設定 5 折
+                fprintf('✅ 找到 %d 筆資料，準備進行 %d 折交叉驗證...\n', numTotal, k);
+                
+                rng('default'); % 固定亂數種子，讓每次分割的 Fold 結果可重現
+                c = cvpartition(numTotal, 'KFold', k); % 自動切分 5 份
+                
+                targetSize = [512 512];
+                augmenter = imageDataAugmenter('RandXReflection',true, 'RandYReflection',true, 'RandRotation',[-20, 20]);
+                dateStr = datestr(now, 'yyyymmdd_HHMM');
+                
+                valAccuracies = zeros(k, 1); % 用來儲存每折的驗證準確率
+                
+                for fold = 1:k
+                    fprintf('\n====================================================\n');
+                    fprintf('🚀 正在訓練第 %d 折 (Fold %d / %d)\n', fold, fold, k);
+                    fprintf('====================================================\n');
+                    
+                    % 依據目前的 Fold 提取訓練集與驗證集索引
+                    trainIdx = training(c, fold);
+                    valIdx   = test(c, fold);
+                    
+                    imdsTrain = subset(imdsAll, trainIdx);
+                    pxdsTrain = subset(pxdsAll, trainIdx);
+                    imdsVal   = subset(imdsAll, valIdx);
+                    pxdsVal   = subset(pxdsAll, valIdx);
+                    
+                    fprintf('  - 本折訓練集: %d 張 | 驗證集: %d 張\n', numel(imdsTrain.Files), numel(imdsVal.Files));
+                    
+                    dsTrain = pixelLabelImageDatastore(imdsTrain, pxdsTrain, 'DataAugmentation', augmenter);
+                    dsVal   = pixelLabelImageDatastore(imdsVal, pxdsVal);
+                    dsTrain = transform(dsTrain, @(data) resizeImageAndLabel(data, targetSize));
+                    dsVal   = transform(dsVal, @(data) resizeImageAndLabel(data, targetSize));
+                    
+                    inputSize = [targetSize, 3];
+                    lgraph = unetLayers(inputSize, numel(classNames));
+                    options = trainingOptions('adam', 'InitialLearnRate', 1e-3, 'MaxEpochs', 30, ...
+                        'MiniBatchSize', 4, 'Shuffle', 'every-epoch', 'ValidationData', dsVal, 'Plots', 'training-progress');
+                    
+                    % 開始訓練此 Fold 的模型
+                    [net, info] = trainNetwork(dsTrain, lgraph, options);
+                    
+                    % 從 info 中取出最後一輪有效的驗證準確率
+                    valAcc = info.ValidationAccuracy;
+                    validAccs = valAcc(~isnan(valAcc));
+                    if ~isempty(validAccs)
+                        foldFinalAcc = validAccs(end);
+                    else
+                        foldFinalAcc = NaN;
+                    end
+                    valAccuracies(fold) = foldFinalAcc;
+                    
+                    fprintf('✅ Fold %d 訓練完成。驗證準確率: %.2f%%\n', fold, foldFinalAcc);
+                    
+                    % --- 自動儲存每一折的模型 ---
+                    % 因為訓練 5 次很花時間，建議直接自動儲存每一折的模型以防當機流失
+                    modelFileName = sprintf('trainedUnet_CV_Fold%d_%s.mat', fold, dateStr);
+                    save(modelFileName, 'net', 'classNames', 'info', 'targetSize');
+                    fprintf('  -> 模型已自動儲存為 %s\n', modelFileName);
+                end
+                
+                % --- 輸出總結報告 ---
+                fprintf('\n====================================================\n');
+                fprintf('🎉 5 折交叉驗證全部完成！\n');
+                for f = 1:k
+                    fprintf('  - Fold %d 驗證準確率: %.2f%%\n', f, valAccuracies(f));
+                end
+                fprintf('----------------------------------------------------\n');
+                validScores = valAccuracies(~isnan(valAccuracies));
+                fprintf('🎯 平均驗證準確率: %.2f%% ± %.2f%%\n', mean(validScores), std(validScores));
+                fprintf('====================================================\n');
+                
+            else
+                disp('⚠️ 無效的選擇，返回主選單。');
             end
             
         case '3'

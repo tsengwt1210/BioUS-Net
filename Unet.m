@@ -1,5 +1,6 @@
 %% ==== U-Net 全流程訓練與圈選腳本 v5.6 (智能修補版) ====
-% 版本說明：  2026.03.17
+% 版本說明：  2026.04.14
+% v5.6: 模擬便量變暗、增加亮度對比、上下左右平移、學習率衰減、灰階
 % v5.6: 導入智能後處理。利用 Solidity < 0.9 條件式啟動 Convex Hull 修補缺角，
 %       並修復 labeloverlay 的 categorical bug，確保疊圖顯示為飽滿實心。
 %       單張圖片分析改為跳出視窗顯示亮化/暗化/輪廓線，不再直接儲存。
@@ -9,7 +10,7 @@ clear; clc; close all;
 %% ===== Step 1: 全域參數設定 =====
 gTruthPath_default = 'D:\專題\U-net\scripts\v3table_rebuilt.mat'; % 預設 gTruth 檔案路徑
 imageFolderPath = 'D:\專題\U-net\images_2';       % 包含所有原始圖片的資料夾
-maskFolderPath = 'D:\專題\U-net\masks\V6';    % 儲存產生出來的 mask 與結果圖
+maskFolderPath = 'D:\專題\U-net\masks\V7_20260319';    % 儲存產生出來的 mask 與結果圖
 
 pixelSize_sq_um = 1 * 1; % 【重要】每像素代表的實際"面積" (例如 0.5um * 0.5um = 0.25)。
 minAreaThreshold_px = 30000; % 面積計算時，小於此像素數的物件將被過濾
@@ -60,17 +61,18 @@ while true
                 end
                 fprintf('✅ 資料集切分完成: %d 訓練, %d 驗證\n', numel(imdsTrain.Files), numel(imdsVal.Files));
                 targetSize = [512 512];
-                augmenter = imageDataAugmenter('RandXReflection',true, 'RandYReflection',true, 'RandRotation',[-20, 20]);
+                augmenter = imageDataAugmenter('RandXReflection',true, 'RandYReflection',true, 'RandRotation',[-20, 20],'RandXTranslation', [-30, 30],'RandYTranslation', [-30, 30]); %允許左右上下平移 30 像素
                 dsTrain = pixelLabelImageDatastore(imdsTrain, pxdsTrain, 'DataAugmentation', augmenter);
                 dsVal = pixelLabelImageDatastore(imdsVal, pxdsVal);
-                dsTrain = transform(dsTrain, @(data) resizeImageAndLabel(data, targetSize));
+                % 【修改這裡】訓練集使用包含亮度干擾的 transform
+                dsTrain = transform(dsTrain, @(data) augmentTrainingData(data, targetSize)); 
+                % 驗證集保持原樣，不需要做隨機亮度干擾
                 dsVal = transform(dsVal, @(data) resizeImageAndLabel(data, targetSize));
                 disp('✅ 資料集準備完成');
                 
                 inputSize = [targetSize, 3];
                 lgraph = unetLayers(inputSize, numel(classNames));
-                options = trainingOptions('adam', 'InitialLearnRate', 1e-3, 'MaxEpochs', 30, ...
-                    'MiniBatchSize', 4, 'Shuffle', 'every-epoch', 'ValidationData', dsVal, 'Plots', 'training-progress');
+                options = trainingOptions('adam','InitialLearnRate', 1e-3, 'LearnRateSchedule', 'piecewise', 'LearnRateDropFactor', 0.2, 'LearnRateDropPeriod', 10, 'MaxEpochs', 30, 'MiniBatchSize', 4, 'Shuffle', 'every-epoch', 'ValidationData', dsVal,'Plots', 'training-progress');
                 
                 disp('🚀 開始訓練 U-Net 模型...');
                 [net, info] = trainNetwork(dsTrain, lgraph, options);
@@ -84,7 +86,7 @@ while true
                 end
                 
             elseif trainMode == '2'
-                %% --- 模式 2：5折交叉驗證 ---
+                %% --- 模式 2：5折交叉驗證 (免工具箱手工切分版) ---
                 % 取出所有完整的資料集
                 [imdsAll, pxdsAll] = buildAlignedDatastores(imageFolderPath, maskFolderPath, classNames);
                 numTotal = numel(imdsAll.Files);
@@ -96,8 +98,11 @@ while true
                 k = 5; % 設定 5 折
                 fprintf('✅ 找到 %d 筆資料，準備進行 %d 折交叉驗證...\n', numTotal, k);
                 
-                rng('default'); % 固定亂數種子，讓每次分割的 Fold 結果可重現
-                c = cvpartition(numTotal, 'KFold', k); % 自動切分 5 份
+                % --- ⭐自己動手寫的 K-Fold 分組邏輯 (取代 cvpartition) ---
+                rng('default'); % 固定亂數種子，確保每次洗牌結果一樣
+                shuffledIdx = randperm(numTotal); % 將 1~205 的數字隨機打亂
+                groupAssignments = mod(0:numTotal-1, k) + 1; % 產生 1,2,3,4,5,1,2,3... 的群組編號
+                % ------------------------------------------------------------
                 
                 targetSize = [512 512];
                 augmenter = imageDataAugmenter('RandXReflection',true, 'RandYReflection',true, 'RandRotation',[-20, 20]);
@@ -110,9 +115,10 @@ while true
                     fprintf('🚀 正在訓練第 %d 折 (Fold %d / %d)\n', fold, fold, k);
                     fprintf('====================================================\n');
                     
-                    % 依據目前的 Fold 提取訓練集與驗證集索引
-                    trainIdx = training(c, fold);
-                    valIdx   = test(c, fold);
+                    % --- ⭐依據我們自己寫的分組邏輯來抽牌 ---
+                    valIdx   = shuffledIdx(groupAssignments == fold);
+                    trainIdx = shuffledIdx(groupAssignments ~= fold);
+                    % --------------------------------------------------------
                     
                     imdsTrain = subset(imdsAll, trainIdx);
                     pxdsTrain = subset(pxdsAll, trainIdx);
@@ -128,8 +134,7 @@ while true
                     
                     inputSize = [targetSize, 3];
                     lgraph = unetLayers(inputSize, numel(classNames));
-                    options = trainingOptions('adam', 'InitialLearnRate', 1e-3, 'MaxEpochs', 30, ...
-                        'MiniBatchSize', 4, 'Shuffle', 'every-epoch', 'ValidationData', dsVal, 'Plots', 'training-progress');
+                    options = trainingOptions('adam','InitialLearnRate', 1e-3, 'LearnRateSchedule', 'piecewise', 'LearnRateDropFactor', 0.2, 'LearnRateDropPeriod', 10, 'MaxEpochs', 30, 'MiniBatchSize', 4, 'Shuffle', 'every-epoch', 'ValidationData', dsVal,'Plots', 'training-progress');
                     
                     % 開始訓練此 Fold 的模型
                     [net, info] = trainNetwork(dsTrain, lgraph, options);
@@ -147,7 +152,6 @@ while true
                     fprintf('✅ Fold %d 訓練完成。驗證準確率: %.2f%%\n', fold, foldFinalAcc);
                     
                     % --- 自動儲存每一折的模型 ---
-                    % 因為訓練 5 次很花時間，建議直接自動儲存每一折的模型以防當機流失
                     modelFileName = sprintf('trainedUnet_CV_Fold%d_%s.mat', fold, dateStr);
                     save(modelFileName, 'net', 'classNames', 'info', 'targetSize');
                     fprintf('  -> 模型已自動儲存為 %s\n', modelFileName);
@@ -379,6 +383,10 @@ function dataOut = resizeImageAndLabel(dataIn, targetSize)
     if istable(dataIn), localImage = dataIn{1, 1}{1}; localLabel = dataIn{1, 2}{1};
     elseif iscell(dataIn), localImage = dataIn{1}; localLabel = dataIn{2};
     else, error('Transform function received unexpected data type: %s', class(dataIn)); end
+    
+    % 【新增】：對訓練影像進行 CLAHE 邊界增強
+    localImage = applyCLAHE(localImage); 
+    
     dataOut = {imresize(localImage, targetSize), imresize(localLabel, targetSize, 'nearest')};
 end
 
@@ -402,7 +410,11 @@ function predictAndAnalyzeSingleImage(net, classNames, pixelSize, resultFolder, 
     se = strel('disk', morphRadius);
     originalImg = imread(imgPath);
     
-    resizedImg = imresize(originalImg, netInputSize);
+    % 【新增】：將原始影像進行 CLAHE 處理 (專門給模型預測用)
+    modelInputImg = applyCLAHE(originalImg);
+    
+    % 注意：這裡改為縮放 modelInputImg，而不是 originalImg
+    resizedImg = imresize(modelInputImg, netInputSize);
     
     scores_resized = predict(net, resizedImg);
     [confidenceMap_resized, predMask_indices_resized] = max(scores_resized, [], 3);
@@ -530,7 +542,13 @@ function calcAreasAndSave(imdsSet, description, net, classNames, targetClassName
         waitbar(i/numel(imdsSet.Files), h_wait, sprintf('處理中 %d / %d: %s', i, numel(imdsSet.Files), safe_description));
         originalImg = readimage(imdsSet, i);
         
-        resizedImg = imresize(originalImg, netInputSize);
+        % 【新增】：將原始影像進行 CLAHE 處理 (專門給模型預測用)
+        modelInputImg = applyCLAHE(originalImg);
+        
+        if size(originalImg, 3) > 1, grayImg = rgb2gray(originalImg); else, grayImg = originalImg; end
+        
+        % 注意：這裡改為縮放 modelInputImg，而不是 originalImg
+        resizedImg = imresize(modelInputImg, netInputSize);
         
         scores_resized = predict(net, resizedImg);
         [confidenceMap_resized, predMask_indices_resized] = max(scores_resized, [], 3);
@@ -607,4 +625,40 @@ function calcAreasAndSave(imdsSet, description, net, classNames, targetClassName
     else
         fprintf('⚠️ 未偵測到有效物件，未產生 Excel 檔案。\n');
     end
+end
+
+function processedImg = applyCLAHE(img)
+    % 1. 確保影像是灰階 (去除多餘的色彩干擾)
+    if size(img, 3) == 3
+        grayImg = rgb2gray(img);
+    else
+        grayImg = img;
+    end
+    
+    % 2. 執行 CLAHE (增強空穴的邊界與光影對比)
+    % ClipLimit 設為 0.02 (預設 0.01)，稍微加強對比度，很適合超音波雜訊
+    enhancedImg = adapthisteq(grayImg, 'ClipLimit', 0.02);
+    
+    % 3. 轉回 3 通道
+    % 因為你原本的 U-Net 架構 (unetLayers) 是設定為 3 通道輸入
+    % 將單通道複製三層，這樣就不需要去改模型的網路架構參數了
+    processedImg = cat(3, enhancedImg, enhancedImg, enhancedImg);
+end
+
+function dataOut = augmentTrainingData(dataIn, targetSize)
+    % 解析資料
+    if istable(dataIn), localImage = dataIn{1, 1}{1}; localLabel = dataIn{1, 2}{1};
+    elseif iscell(dataIn), localImage = dataIn{1}; localLabel = dataIn{2};
+    else, error('Transform function received unexpected data type'); end
+    
+    % 1. 執行基礎預處理 (CLAHE 增強邊界)
+    localImage = applyCLAHE(localImage);
+    
+    % 2. 隨機亮度與對比度擾動 (這是 MATLAB 處理顏色擴增的正確寫法)
+    % Brightness: 亮度隨機增減 20%
+    % Contrast: 對比度隨機變成 0.8 倍到 1.2 倍
+    localImage = jitterColorHSV(localImage, 'Brightness', [-0.2, 0.2], 'Contrast', [0.8, 1.2]);
+    
+    % 3. 縮放並回傳
+    dataOut = {imresize(localImage, targetSize), imresize(localLabel, targetSize, 'nearest')};
 end

@@ -637,12 +637,12 @@ function processedImg = applyCLAHE(img)
     
     % 2. 執行 CLAHE (增強空穴的邊界與光影對比)
     % ClipLimit 設為 0.02 (預設 0.01)，稍微加強對比度，很適合超音波雜訊
-    enhancedImg = adapthisteq(grayImg, 'ClipLimit', 0.02);
+    %enhancedImg = adapthisteq(grayImg, 'ClipLimit', 0.02);
     
     % 3. 轉回 3 通道
     % 因為你原本的 U-Net 架構 (unetLayers) 是設定為 3 通道輸入
     % 將單通道複製三層，這樣就不需要去改模型的網路架構參數了
-    processedImg = cat(3, enhancedImg, enhancedImg, enhancedImg);
+    processedImg = cat(3, grayImg, grayImg, grayImg);
 end
 
 function dataOut = augmentTrainingData(dataIn, targetSize)

@@ -1,6 +1,7 @@
-%% ==== U-Net 全流程訓練與圈選腳本 v5.6 (智能修補版) ====
-% 版本說明：  2026.04.14
-% v5.6: 模擬便量變暗、增加亮度對比、上下左右平移、學習率衰減、灰階
+%% ==== U-Net 全流程訓練與圈選腳本 v5 (智能修補版) ====
+% 版本說明：  2026.05.20
+% v5.8: 移除灰階，新增色彩繞動
+% v5.7: 模擬便量變暗、增加亮度對比、上下左右平移、學習率衰減、灰階
 % v5.6: 導入智能後處理。利用 Solidity < 0.9 條件式啟動 Convex Hull 修補缺角，
 %       並修復 labeloverlay 的 categorical bug，確保疊圖顯示為飽滿實心。
 %       單張圖片分析改為跳出視窗顯示亮化/暗化/輪廓線，不再直接儲存。
@@ -18,7 +19,7 @@ morphologyRadius = 15; % 形態學閉運算的半徑
 maskEffectValue = 50;  % 亮度調整圖的效果強度。
 
 fprintf('====================================================\n');
-fprintf('    U-Net 全流程腳本 v5.6 - 智能修補版\n');
+fprintf('    U-Net 全流程腳本 v5.8 - 智能修補版\n');
 fprintf('====================================================\n');
 
 %% ===== 主流程控制迴圈 =====
@@ -71,8 +72,8 @@ while true
                 disp('✅ 資料集準備完成');
                 
                 inputSize = [targetSize, 3];
-                lgraph = unetLayers(inputSize, numel(classNames));
-                options = trainingOptions('adam','InitialLearnRate', 1e-3, 'LearnRateSchedule', 'piecewise', 'LearnRateDropFactor', 0.2, 'LearnRateDropPeriod', 10, 'MaxEpochs', 30, 'MiniBatchSize', 4, 'Shuffle', 'every-epoch', 'ValidationData', dsVal,'Plots', 'training-progress');
+                lgraph = buildAttentionUnet(inputSize, numel(classNames));
+                options = trainingOptions('adam','InitialLearnRate', 1e-3, 'LearnRateSchedule', 'piecewise', 'LearnRateDropFactor', 0.2, 'LearnRateDropPeriod', 10, 'MiniBatchSize', 4, 'Shuffle', 'every-epoch', 'ValidationData', dsVal,'Plots', 'training-progress');
                 
                 disp('🚀 開始訓練 U-Net 模型...');
                 [net, info] = trainNetwork(dsTrain, lgraph, options);
@@ -133,7 +134,7 @@ while true
                     dsVal   = transform(dsVal, @(data) resizeImageAndLabel(data, targetSize));
                     
                     inputSize = [targetSize, 3];
-                    lgraph = unetLayers(inputSize, numel(classNames));
+                    lgraph = buildAttentionUnet(inputSize, numel(classNames));
                     options = trainingOptions('adam','InitialLearnRate', 1e-3, 'LearnRateSchedule', 'piecewise', 'LearnRateDropFactor', 0.2, 'LearnRateDropPeriod', 10, 'MaxEpochs', 30, 'MiniBatchSize', 4, 'Shuffle', 'every-epoch', 'ValidationData', dsVal,'Plots', 'training-progress');
                     
                     % 開始訓練此 Fold 的模型
@@ -384,8 +385,8 @@ function dataOut = resizeImageAndLabel(dataIn, targetSize)
     elseif iscell(dataIn), localImage = dataIn{1}; localLabel = dataIn{2};
     else, error('Transform function received unexpected data type: %s', class(dataIn)); end
     
-    % 【新增】：對訓練影像進行 CLAHE 邊界增強
-    localImage = applyCLAHE(localImage); 
+    % 【修改】移除驗證集的 CLAHE / 灰階，保持原圖預測
+    % localImage = applyCLAHE(localImage); <-- 直接刪掉這行或註解掉
     
     dataOut = {imresize(localImage, targetSize), imresize(localLabel, targetSize, 'nearest')};
 end
@@ -628,21 +629,9 @@ function calcAreasAndSave(imdsSet, description, net, classNames, targetClassName
 end
 
 function processedImg = applyCLAHE(img)
-    % 1. 確保影像是灰階 (去除多餘的色彩干擾)
-    if size(img, 3) == 3
-        grayImg = rgb2gray(img);
-    else
-        grayImg = img;
-    end
-    
-    % 2. 執行 CLAHE (增強空穴的邊界與光影對比)
-    % ClipLimit 設為 0.02 (預設 0.01)，稍微加強對比度，很適合超音波雜訊
-    %enhancedImg = adapthisteq(grayImg, 'ClipLimit', 0.02);
-    
-    % 3. 轉回 3 通道
-    % 因為你原本的 U-Net 架構 (unetLayers) 是設定為 3 通道輸入
-    % 將單通道複製三層，這樣就不需要去改模型的網路架構參數了
-    processedImg = cat(3, grayImg, grayImg, grayImg);
+    % 【修改】完全移除灰階轉換與 CLAHE
+    % 讓 U-Net 直接接收完整的原始 RGB 資訊，保留顏色特徵
+    processedImg = img;
 end
 
 function dataOut = augmentTrainingData(dataIn, targetSize)
@@ -651,14 +640,128 @@ function dataOut = augmentTrainingData(dataIn, targetSize)
     elseif iscell(dataIn), localImage = dataIn{1}; localLabel = dataIn{2};
     else, error('Transform function received unexpected data type'); end
     
-    % 1. 執行基礎預處理 (CLAHE 增強邊界)
-    localImage = applyCLAHE(localImage);
+    % 1. 移除轉灰階的動作，保持 RGB
+    % localImage = applyCLAHE(localImage); <-- 這行已經不需要了，因為 applyCLAHE 已經被我們架空
     
-    % 2. 隨機亮度與對比度擾動 (這是 MATLAB 處理顏色擴增的正確寫法)
-    % Brightness: 亮度隨機增減 20%
-    % Contrast: 對比度隨機變成 0.8 倍到 1.2 倍
-    localImage = jitterColorHSV(localImage, 'Brightness', [-0.2, 0.2], 'Contrast', [0.8, 1.2]);
+    % 2. 【終極色彩擾動】
+    % Hue: 改變顏色 (綠底可能會變藍底或黃底)
+    % Saturation: 改變鮮豔度 (黑底可能會變得帶點顏色，綠底可能變灰)
+    % Brightness & Contrast: 克服打光不均勻的問題
+    localImage = jitterColorHSV(localImage, ...
+        'Hue', [-0.15, 0.15], ...
+        'Saturation', [-0.3, 0.3], ...
+        'Brightness', [-0.3, 0.3], ...
+        'Contrast', [0.7, 1.3]);
     
     % 3. 縮放並回傳
     dataOut = {imresize(localImage, targetSize), imresize(localLabel, targetSize, 'nearest')};
+end
+
+% =========================================================================
+% === Attention U-Net 網路架構建構函數 ===
+% =========================================================================
+function lgraph = buildAttentionUnet(inputSize, numClasses)
+    lgraph = layerGraph();
+    lgraph = addLayers(lgraph, imageInputLayer(inputSize, 'Name', 'input', 'Normalization', 'none'));
+
+    % --- Encoder (特徵提取) ---
+    lgraph = addConvBlock(lgraph, 'enc1', 16, 'input');
+    lgraph = addLayers(lgraph, maxPooling2dLayer(2, 'Stride', 2, 'Name', 'pool1'));
+    lgraph = connectLayers(lgraph, 'enc1_relu2', 'pool1');
+
+    lgraph = addConvBlock(lgraph, 'enc2', 32, 'pool1');
+    lgraph = addLayers(lgraph, maxPooling2dLayer(2, 'Stride', 2, 'Name', 'pool2'));
+    lgraph = connectLayers(lgraph, 'enc2_relu2', 'pool2');
+
+    lgraph = addConvBlock(lgraph, 'enc3', 64, 'pool2');
+    lgraph = addLayers(lgraph, maxPooling2dLayer(2, 'Stride', 2, 'Name', 'pool3'));
+    lgraph = connectLayers(lgraph, 'enc3_relu2', 'pool3');
+
+    lgraph = addConvBlock(lgraph, 'enc4', 128, 'pool3');
+    lgraph = addLayers(lgraph, maxPooling2dLayer(2, 'Stride', 2, 'Name', 'pool4'));
+    lgraph = connectLayers(lgraph, 'enc4_relu2', 'pool4');
+
+    % --- Bottleneck (瓶頸層) ---
+    lgraph = addConvBlock(lgraph, 'bot', 256, 'pool4');
+
+    % --- Decoder + Attention Gate (解碼與注意力機制) ---
+    lgraph = addDecoderBlock(lgraph, 'dec4', 128, 'bot_relu2', 'enc4_relu2');
+    lgraph = addDecoderBlock(lgraph, 'dec3', 64, 'dec4_relu2', 'enc3_relu2');
+    lgraph = addDecoderBlock(lgraph, 'dec2', 32, 'dec3_relu2', 'enc2_relu2');
+    lgraph = addDecoderBlock(lgraph, 'dec1', 16,  'dec2_relu2', 'enc1_relu2');
+
+    % --- Final Output (輸出層) ---
+    finalLayers = [
+        convolution2dLayer(1, numClasses, 'Name', 'final_conv')
+        softmaxLayer('Name', 'softmax')
+        pixelClassificationLayer('Name', 'pixelLabels')
+    ];
+    lgraph = addLayers(lgraph, finalLayers);
+    lgraph = connectLayers(lgraph, 'dec1_relu2', 'final_conv');
+end
+
+% --- 子函數：標準雙卷積區塊 ---
+function lgraph = addConvBlock(lgraph, name, numFilters, inputName)
+    layers = [
+        convolution2dLayer(3, numFilters, 'Padding', 'same', 'Name', [name '_conv1'])
+        batchNormalizationLayer('Name', [name '_BN1'])
+        reluLayer('Name', [name '_relu1'])
+        convolution2dLayer(3, numFilters, 'Padding', 'same', 'Name', [name '_conv2'])
+        batchNormalizationLayer('Name', [name '_BN2'])
+        reluLayer('Name', [name '_relu2'])
+    ];
+    lgraph = addLayers(lgraph, layers);
+    lgraph = connectLayers(lgraph, inputName, [name '_conv1']);
+end
+
+% --- 子函數：解碼器區塊 (包含 Attention Gate) ---
+function lgraph = addDecoderBlock(lgraph, name, numFilters, inputName, skipName)
+    % 1. 上採樣 (Transposed Conv)
+    upConvName = [name '_upconv'];
+    lgraph = addLayers(lgraph, transposedConv2dLayer(2, numFilters, 'Stride', 2, 'Name', upConvName));
+    lgraph = connectLayers(lgraph, inputName, upConvName);
+
+    % 2. 插入 Attention Gate (注意力閘)
+    agName = [name '_AG'];
+    lgraph = addAttentionGate(lgraph, agName, numFilters/2, skipName, upConvName);
+
+    % 3. 拼接 (Concatenation) Attention 過濾後的特徵與上採樣特徵
+    concatName = [name '_concat'];
+    lgraph = addLayers(lgraph, depthConcatenationLayer(2, 'Name', concatName));
+    lgraph = connectLayers(lgraph, [agName '_mult'], [concatName '/in1']);
+    lgraph = connectLayers(lgraph, upConvName, [concatName '/in2']);
+
+    % 4. 卷積還原特徵
+    lgraph = addConvBlock(lgraph, name, numFilters, concatName);
+end
+
+% --- 子函數：核心 Attention Gate 演算法 ---
+function lgraph = addAttentionGate(lgraph, name, numFilters, skipName, gateName)
+    % Gating Signal (來自 Decoder) 的轉換
+    lgraph = addLayers(lgraph, convolution2dLayer(1, numFilters, 'Name', [name '_Wg']));
+    lgraph = connectLayers(lgraph, gateName, [name '_Wg']);
+
+    % Skip Connection (來自 Encoder) 的轉換
+    lgraph = addLayers(lgraph, convolution2dLayer(1, numFilters, 'Name', [name '_Wx']));
+    lgraph = connectLayers(lgraph, skipName, [name '_Wx']);
+
+    % 兩者相加 -> ReLU -> 1x1 Conv 降維 -> Sigmoid 產生 [0,1] 權重遮罩
+    addName = [name '_add'];
+    lgraph = addLayers(lgraph, additionLayer(2, 'Name', addName));
+    lgraph = connectLayers(lgraph, [name '_Wg'], [addName '/in1']);
+    lgraph = connectLayers(lgraph, [name '_Wx'], [addName '/in2']);
+
+    psiLayers = [
+        reluLayer('Name', [name '_relu'])
+        convolution2dLayer(1, 1, 'Name', [name '_psi'])
+        sigmoidLayer('Name', [name '_sigmoid'])
+    ];
+    lgraph = addLayers(lgraph, psiLayers);
+    lgraph = connectLayers(lgraph, addName, [name '_relu']);
+
+    % 將產生的 Attention Mask (Sigmoid) 乘回原始的 Skip Connection
+    multName = [name '_mult'];
+    lgraph = addLayers(lgraph, multiplicationLayer(2, 'Name', multName));
+    lgraph = connectLayers(lgraph, [name '_sigmoid'], [multName '/in1']);
+    lgraph = connectLayers(lgraph, skipName, [multName '/in2']);
 end

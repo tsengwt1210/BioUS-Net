@@ -89,11 +89,11 @@ Repository 提供程式與文件。原始影像、標註及訓練權重需另行
 
 - 目前遮罩流程以背景／單一目標的二類分割為準。多類別遮罩的像素編碼尚未完整處理。
 - `RealArea_um2` 以 `PixelArea_px × pixelSize_sq_um` 計算。預設 `1` 是設定值，需經實際尺度校正才能當作 µm²。
-- 五折模式讀取每折最後一次有效的 `ValidationAccuracy`；這是像素分類準確率，不能直接稱為 Dice 或 IoU。此處未將既有專題報告數值套用為目前版本的成績。
+- 五折模式讀取每折最後一次有效的 `ValidationAccuracy`，是像素分類準確率。
 - 批次選單中的「訓練集／驗證集」會重新產生 80/20 分組，未讀取模型原訓練分組。正式評估應使用另存的資料清單或獨立資料夾，詳見 [驗證與限制](docs/validation.md)。
 
 ## 參考方法
 
 - [U-Net 原始論文](https://arxiv.org/abs/1505.04597)：encoder–decoder 與 skip connection 架構。
-- [Attention U-Net 原始論文](https://arxiv.org/abs/1804.03999)：attention gate 的方法背景；本庫為 MATLAB 實作與專題調整，未聲稱完整重現該論文結果。
+- [Attention U-Net 原始論文](https://arxiv.org/abs/1804.03999)：attention gate 的方法背景；本庫為 MATLAB 實作與專題調整。
 - [本次整理紀錄](CHANGELOG.md)：文件、設定及檢查工具的修改範圍。

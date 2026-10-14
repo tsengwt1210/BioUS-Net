@@ -1,0 +1,20 @@
+# 本機資料、權重與執行輸出
+/data/
+/outputs/
+/config_local.m
+*.mat
+*.xlsx
+
+# MATLAB 暫存與編譯產物
+*.asv
+*.m~
+*.slxc
+slprj/
+codegen/
+*.mex*
+
+# 作業系統與編輯器
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/

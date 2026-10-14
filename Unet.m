@@ -9,14 +9,20 @@
 
 clear; clc; close all;
 %% ===== Step 1: 全域參數設定 =====
-gTruthPath_default = 'D:\專題\U-net\scripts\v3table_rebuilt.mat'; % 預設 gTruth 檔案路徑
-imageFolderPath = 'D:\專題\U-net\images_2';       % 包含所有原始圖片的資料夾
-maskFolderPath = 'D:\專題\U-net\masks\V7_20260319';    % 儲存產生出來的 mask 與結果圖
+projectRoot = fileparts(mfilename('fullpath'));
+gTruthPath_default = fullfile(projectRoot, 'data', 'gTruth.mat');
+imageFolderPath = fullfile(projectRoot, 'data', 'images');
+maskFolderPath = fullfile(projectRoot, 'outputs', 'attention');
 
 pixelSize_sq_um = 1 * 1; % 【重要】每像素代表的實際"面積" (例如 0.5um * 0.5um = 0.25)。
 minAreaThreshold_px = 30000; % 面積計算時，小於此像素數的物件將被過濾
 morphologyRadius = 15; % 形態學閉運算的半徑
 maskEffectValue = 50;  % 亮度調整圖的效果強度。
+
+% 複製 config_example.m 為 config_local.m 後，可覆寫本機路徑與量測參數。
+localConfig = fullfile(projectRoot, 'config_local.m');
+if isfile(localConfig), run(localConfig); end
+if ~isfolder(maskFolderPath), mkdir(maskFolderPath); end
 
 fprintf('====================================================\n');
 fprintf('    U-Net 全流程腳本 v5.8 - 智能修補版\n');
